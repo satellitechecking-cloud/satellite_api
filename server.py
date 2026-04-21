@@ -1,9 +1,9 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import requests
 import json
 import os
-import uuid
+import random
+import string
 from datetime import datetime
 
 app = Flask(__name__)
@@ -15,12 +15,16 @@ CORS(app)
 PAYPAL_CLIENT_ID = "ATl4-CsC8WLf0yZQw3Hcoiwe9VZ4N2abU8gDET-GGk7CEqIElUECTSbD_Y3EYTcymEey7wvustobI753"
 PAYPAL_SECRET = "EN7-2GQ-nWQakjxaWhQqjjooUKcHkSm1Bsu_edITFCsTmNnuKd0SORavMqEe4VNZ7j_aaHgmLo8xaFoS"
 PAYPAL_PLAN_ID = "P-60A89529UF070594ENHTVAIY"
-PAYPAL_API_BASE = "https://api-m.paypal.com"  # Live
 
 # ============================================
-# ملف حفظ التراخيص
+# ملفات التخزين
 # ============================================
 LICENSES_FILE = "licenses.json"
+PAID_DEVICES_FILE = "paid_devices.json"
+
+# ============================================
+# دوال مساعدة للتخزين
+# ============================================
 
 def load_licenses():
     try:
@@ -39,10 +43,27 @@ def save_licenses(licenses):
     except:
         return False
 
+def load_paid_devices():
+    try:
+        if os.path.exists(PAID_DEVICES_FILE):
+            with open(PAID_DEVICES_FILE, 'r') as f:
+                return set(json.load(f))
+        return set()
+    except:
+        return set()
+
+def save_paid_device(device_id):
+    paid = load_paid_devices()
+    paid.add(device_id)
+    with open(PAID_DEVICES_FILE, 'w') as f:
+        json.dump(list(paid), f)
+
+def is_device_paid(device_id):
+    """التحقق: هل هذا الجهاز دفع فعلاً؟"""
+    return device_id in load_paid_devices()
+
 def generate_license_key():
     """توليد مفتاح ترخيص فريد بصيغة XXXX-XXXX-XXXX-XXXX"""
-    import random
-    import string
     parts = []
     for i in range(4):
         part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
@@ -63,14 +84,18 @@ def buy_page():
         <script src="https://www.paypal.com/sdk/js?client-id={PAYPAL_CLIENT_ID}&vault=true&intent=subscription"></script>
         <style>
             body {{ font-family: 'Segoe UI', Arial; text-align: center; padding: 50px; background: #0f172a; color: white; direction: rtl; }}
-            .container {{ max-width: 500px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; box-shadow: 0 0 20px rgba(56,189,248,0.2); }}
-            h1 {{ color: #facc15; margin-bottom: 10px; }}
-            .price {{ font-size: 48px; color: #38bdf8; margin: 20px 0; font-weight: bold; }}
-            .features {{ text-align: right; margin: 30px 0; color: #cbd5e1; }}
-            .features li {{ margin: 10px 0; }}
+            .container {{ max-width: 500px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; }}
+            h1 {{ color: #facc15; }}
+            .price {{ font-size: 48px; color: #38bdf8; margin: 20px 0; }}
+            .features {{ text-align: right; margin: 30px 0; }}
             .note {{ font-size: 12px; color: #94a3b8; margin-top: 20px; }}
-            .btn-back {{ display: inline-block; margin-top: 20px; padding: 10px 20px; background: #38bdf8; color: #0f172a; text-decoration: none; border-radius: 8px; }}
         </style>
+        <script>
+            if(!localStorage.getItem('satellite_device_id')) {{
+                var deviceId = 'DEV_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                localStorage.setItem('satellite_device_id', deviceId);
+            }}
+        </script>
     </head>
     <body>
         <div class="container">
@@ -85,10 +110,11 @@ def buy_page():
             </ul>
             <div id="paypal-button-container"></div>
             <div class="note">🔒 دفع آمن عبر PayPal | يتم التجديد تلقائياً شهرياً</div>
-            <a href="/" class="btn-back">🏠 العودة للرئيسية</a>
         </div>
         
         <script>
+            var deviceId = localStorage.getItem('satellite_device_id');
+            
             paypal.Buttons({{
                 style: {{
                     shape: 'rect',
@@ -98,11 +124,12 @@ def buy_page():
                 }},
                 createSubscription: function(data, actions) {{
                     return actions.subscription.create({{
-                        plan_id: '{PAYPAL_PLAN_ID}'
+                        plan_id: '{PAYPAL_PLAN_ID}',
+                        custom_id: deviceId
                     }});
                 }},
                 onApprove: function(data, actions) {{
-                    window.location.href = '/payment-success?subscription_id=' + data.subscriptionID;
+                    window.location.href = '/payment-success?subscription_id=' + data.subscriptionID + '&device_id=' + deviceId;
                 }},
                 onError: function(err) {{
                     console.error(err);
@@ -115,11 +142,19 @@ def buy_page():
     '''
 
 # ============================================
-# 2. صفحة نجاح الدفع
+# 2. صفحة نجاح الدفع (تسجيل الجهاز كمدفوع)
 # ============================================
 @app.route('/payment-success', methods=['GET'])
 def payment_success():
     subscription_id = request.args.get('subscription_id')
+    device_id = request.args.get('device_id')
+    
+    if not device_id:
+        return "❌ خطأ: لا يوجد device_id"
+    
+    # تسجيل الجهاز كمدفوع
+    save_paid_device(device_id)
+    print(f"✅ تم تسجيل جهاز {device_id[:30]}... كمدفوع")
     
     return f'''
     <!DOCTYPE html>
@@ -132,7 +167,6 @@ def payment_success():
             .container {{ max-width: 500px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; }}
             h1 {{ color: #34d399; }}
             .checkmark {{ font-size: 80px; }}
-            .btn-back {{ display: inline-block; margin-top: 20px; padding: 10px 20px; background: #38bdf8; color: #0f172a; text-decoration: none; border-radius: 8px; }}
         </style>
     </head>
     <body>
@@ -140,11 +174,9 @@ def payment_success():
             <div class="checkmark">✅</div>
             <h1>تم الدفع بنجاح!</h1>
             <p>تم تفعيل اشتراكك الشهري في SatelliteChecking1</p>
-            <p>📧 تم إرسال إيصال الدفع إلى بريدك الإلكتروني</p>
             <p>🔓 الآن ارجع إلى البرنامج واضغط <strong>"تحقق من الدفع"</strong></p>
-            <hr style="margin: 20px 0; border-color: #38bdf8;">
+            <hr>
             <p style="font-size: 12px; color: #94a3b8;">Subscription ID: {subscription_id}</p>
-            <a href="/buy" class="btn-back">🔄 العودة للاشتراك</a>
         </div>
     </body>
     </html>
@@ -165,55 +197,20 @@ def payment_cancel():
             body { font-family: Arial; text-align: center; padding: 50px; background: #0f172a; color: white; }
             .container { max-width: 500px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; }
             h1 { color: #facc15; }
-            .btn-back { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #38bdf8; color: #0f172a; text-decoration: none; border-radius: 8px; }
         </style>
     </head>
     <body>
         <div class="container">
             <h1>⚠️ تم إلغاء الدفع</h1>
             <p>لم يتم خصم أي مبلغ من حسابك.</p>
-            <p>يمكنك العودة إلى البرنامج والمحاولة مرة أخرى.</p>
-            <a href="/buy" class="btn-back">💰 العودة لصفحة الدفع</a>
+            <a href="/buy" style="color:#38bdf8;">💰 العودة لصفحة الدفع</a>
         </div>
     </body>
     </html>
     '''
 
 # ============================================
-# 4. الصفحة الرئيسية
-# ============================================
-@app.route('/', methods=['GET'])
-def home():
-    return '''
-    <!DOCTYPE html>
-    <html lang="ar" dir="rtl">
-    <head>
-        <meta charset="UTF-8">
-        <title>SatelliteChecking1 API</title>
-        <style>
-            body { font-family: Arial; text-align: center; padding: 50px; background: #0f172a; color: white; }
-            .container { max-width: 600px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; }
-            h1 { color: #38bdf8; }
-            .endpoint { background: #0f172a; padding: 10px; border-radius: 8px; margin: 10px 0; font-family: monospace; }
-            .btn { display: inline-block; margin-top: 20px; padding: 12px 30px; background: #facc15; color: #0f172a; text-decoration: none; border-radius: 8px; font-weight: bold; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🛰️ SatelliteChecking1 API</h1>
-            <p>الخدمة تعمل بشكل طبيعي ✅</p>
-            <div class="endpoint">POST /api/activate - تفعيل الترخيص</div>
-            <div class="endpoint">POST /api/check - التحقق من الترخيص</div>
-            <div class="endpoint">POST /api/get-license - جلب ترخيص جديد</div>
-            <div class="endpoint">GET /buy - صفحة الدفع</div>
-            <a href="/buy" class="btn">💰 شراء اشتراك</a>
-        </div>
-    </body>
-    </html>
-    '''
-
-# ============================================
-# 5. API لجلب الترخيص (يستخدمه برنامج العميل)
+# 4. API لجلب الترخيص (فقط للأجهزة المدفوعة)
 # ============================================
 @app.route('/api/get-license', methods=['POST'])
 def get_license():
@@ -224,10 +221,13 @@ def get_license():
         if not device_id:
             return jsonify({'success': False, 'error': 'device_id مطلوب'})
         
-        # توليد ترخيص جديد
+        # 🔴 شرط واحد فقط: هل هذا الجهاز دفع؟
+        if not is_device_paid(device_id):
+            return jsonify({'success': False, 'error': 'لم يتم الدفع من هذا الجهاز. يرجى شراء اشتراك أولاً'})
+        
+        # الجهاز دفع - نعطيه ترخيص
         license_key = generate_license_key()
         
-        # حفظ الترخيص
         licenses = load_licenses()
         licenses[device_id] = {
             "license_key": license_key,
@@ -237,16 +237,15 @@ def get_license():
         }
         save_licenses(licenses)
         
-        return jsonify({
-            'success': True,
-            'license_key': license_key
-        })
+        print(f"✅ تم إصدار ترخيص للجهاز المدفوع {device_id[:30]}...")
+        return jsonify({'success': True, 'license_key': license_key})
         
     except Exception as e:
+        print(f"❌ خطأ في get_license: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
-# 6. API للتحقق من صحة الترخيص
+# 5. API للتحقق من صحة الترخيص
 # ============================================
 @app.route('/api/activate', methods=['POST'])
 def activate():
@@ -260,22 +259,15 @@ def activate():
         # البحث عن الترخيص
         for dev_id, info in licenses.items():
             if info.get('license_key') == license_key and info.get('status') == 'active':
-                return jsonify({
-                    'success': True,
-                    'status': 'active',
-                    'message': 'تم التفعيل بنجاح'
-                })
+                return jsonify({'success': True, 'status': 'active'})
         
-        return jsonify({
-            'success': False,
-            'error': 'ترخيص غير صالح أو منتهي الصلاحية'
-        })
+        return jsonify({'success': False, 'error': 'ترخيص غير صالح'})
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
-# 7. API للتحقق من حالة الترخيص
+# 6. API للتحقق من حالة الترخيص
 # ============================================
 @app.route('/api/check', methods=['POST'])
 def check():
@@ -288,23 +280,15 @@ def check():
         
         for dev_id, info in licenses.items():
             if info.get('license_key') == license_key and info.get('status') == 'active':
-                return jsonify({
-                    'success': True,
-                    'status': 'active',
-                    'message': 'الترخيص صالح'
-                })
+                return jsonify({'success': True, 'status': 'active'})
         
-        return jsonify({
-            'success': False,
-            'status': 'invalid',
-            'error': 'ترخيص غير صالح'
-        })
+        return jsonify({'success': False, 'status': 'invalid'})
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
-# 8. API للتحقق من صحة السيرفر
+# 7. API للتحقق من صحة السيرفر
 # ============================================
 @app.route('/api/health', methods=['GET'])
 def health():
@@ -313,7 +297,7 @@ def health():
         'status': 'healthy',
         'secure': True,
         'service': 'SatelliteChecking1 API',
-        'version': '2.0',
+        'version': '3.0',
         'timestamp': datetime.now().isoformat()
     })
 
@@ -323,9 +307,7 @@ def health():
 if __name__ == '__main__':
     print("=" * 50)
     print("🚀 تشغيل سيرفر SatelliteChecking1...")
-    print(f"📍 http://localhost:5000")
-    print(f"📡 الرابط العام: https://satellite-api-mnfw.onrender.com")
-    print(f"💰 صفحة الدفع: /buy")
-    print(f"📡 API: /api/activate, /api/check, /api/get-license")
+    print("💰 صفحة الدفع: /buy")
+    print("📡 API: /api/activate, /api/check, /api/get-license")
     print("=" * 50)
     app.run(host='0.0.0.0', port=5000, debug=True)
