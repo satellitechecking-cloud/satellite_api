@@ -1,172 +1,331 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import sqlite3
-import datetime
+import requests
+import json
+import os
 import uuid
-import hashlib
-import time
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
-SECRET_KEY = "SUPER_SECRET_KEY_2024"
-ADMIN_SECRET = "SATELLITE_SECRET_KEY_2024"
+# ============================================
+# 🔐 بيانات PayPal الخاصة بك (Live)
+# ============================================
+PAYPAL_CLIENT_ID = "ATl4-CsC8WLf0yZQw3Hcoiwe9VZ4N2abU8gDET-GGk7CEqIElUECTSbD_Y3EYTcymEey7wvustobI753"
+PAYPAL_SECRET = "EN7-2GQ-nWQakjxaWhQqjjooUKcHkSm1Bsu_edITFCsTmNnuKd0SORavMqEe4VNZ7j_aaHgmLo8xaFoS"
+PAYPAL_PLAN_ID = "P-60A89529UF070594ENHTVAIY"
+PAYPAL_API_BASE = "https://api-m.paypal.com"  # Live
 
-def init_db():
-    conn = sqlite3.connect('licenses.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS licenses (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        license_key TEXT UNIQUE NOT NULL,
-        plan TEXT DEFAULT 'pro',
-        device_id TEXT,
-        max_devices INTEGER DEFAULT 1,
-        expiry_date TEXT,
-        is_active INTEGER DEFAULT 1,
-        created_at TEXT,
-        activated_at TEXT
-    )''')
-    conn.commit()
-    conn.close()
-    print("✅ Database initialized")
+# ============================================
+# ملف حفظ التراخيص
+# ============================================
+LICENSES_FILE = "licenses.json"
 
-init_db()
+def load_licenses():
+    try:
+        if os.path.exists(LICENSES_FILE):
+            with open(LICENSES_FILE, 'r') as f:
+                return json.load(f)
+        return {}
+    except:
+        return {}
 
-def generate_license():
-    return f"SAT-{uuid.uuid4().hex[:8].upper()}-{uuid.uuid4().hex[:4].upper()}"
+def save_licenses(licenses):
+    try:
+        with open(LICENSES_FILE, 'w') as f:
+            json.dump(licenses, f, indent=2)
+        return True
+    except:
+        return False
 
-def hash_device(device_id):
-    return hashlib.sha256(device_id.encode()).hexdigest()
+def generate_license_key():
+    """توليد مفتاح ترخيص فريد بصيغة XXXX-XXXX-XXXX-XXXX"""
+    import random
+    import string
+    parts = []
+    for i in range(4):
+        part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+        parts.append(part)
+    return '-'.join(parts)
 
-def generate_signature(status, license_key, device_id):
-    data = f"{status}{license_key}{device_id}{SECRET_KEY}"
-    return hashlib.sha256(data.encode()).hexdigest()
+# ============================================
+# 1. صفحة الدفع الرئيسية
+# ============================================
+@app.route('/buy', methods=['GET'])
+def buy_page():
+    return f'''
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>SatelliteChecking1 - اشتراك شهري</title>
+        <script src="https://www.paypal.com/sdk/js?client-id={PAYPAL_CLIENT_ID}&vault=true&intent=subscription"></script>
+        <style>
+            body {{ font-family: 'Segoe UI', Arial; text-align: center; padding: 50px; background: #0f172a; color: white; direction: rtl; }}
+            .container {{ max-width: 500px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; box-shadow: 0 0 20px rgba(56,189,248,0.2); }}
+            h1 {{ color: #facc15; margin-bottom: 10px; }}
+            .price {{ font-size: 48px; color: #38bdf8; margin: 20px 0; font-weight: bold; }}
+            .features {{ text-align: right; margin: 30px 0; color: #cbd5e1; }}
+            .features li {{ margin: 10px 0; }}
+            .note {{ font-size: 12px; color: #94a3b8; margin-top: 20px; }}
+            .btn-back {{ display: inline-block; margin-top: 20px; padding: 10px 20px; background: #38bdf8; color: #0f172a; text-decoration: none; border-radius: 8px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🛰️ SatelliteChecking1</h1>
+            <p>نظام كشف الفراغات والمعادن والذهب عبر الأقمار الصناعية</p>
+            <div class="price">$100 <span style="font-size:18px">/ شهرياً</span></div>
+            <ul class="features">
+                <li>✅ تحليلات غير محدودة</li>
+                <li>✅ دقة عالية (حتى 10 متر)</li>
+                <li>✅ تقارير شاملة (PDF, KML, JSON)</li>
+                <li>✅ دعم فني 24/7</li>
+            </ul>
+            <div id="paypal-button-container"></div>
+            <div class="note">🔒 دفع آمن عبر PayPal | يتم التجديد تلقائياً شهرياً</div>
+            <a href="/" class="btn-back">🏠 العودة للرئيسية</a>
+        </div>
+        
+        <script>
+            paypal.Buttons({{
+                style: {{
+                    shape: 'rect',
+                    color: 'gold',
+                    layout: 'vertical',
+                    label: 'subscribe'
+                }},
+                createSubscription: function(data, actions) {{
+                    return actions.subscription.create({{
+                        plan_id: '{PAYPAL_PLAN_ID}'
+                    }});
+                }},
+                onApprove: function(data, actions) {{
+                    window.location.href = '/payment-success?subscription_id=' + data.subscriptionID;
+                }},
+                onError: function(err) {{
+                    console.error(err);
+                    alert('حدث خطأ في الدفع. يرجى المحاولة مرة أخرى.');
+                }}
+            }}).render('#paypal-button-container');
+        </script>
+    </body>
+    </html>
+    '''
 
-@app.route('/')
+# ============================================
+# 2. صفحة نجاح الدفع
+# ============================================
+@app.route('/payment-success', methods=['GET'])
+def payment_success():
+    subscription_id = request.args.get('subscription_id')
+    
+    return f'''
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>تم الدفع بنجاح - SatelliteChecking1</title>
+        <style>
+            body {{ font-family: Arial; text-align: center; padding: 50px; background: #0f172a; color: white; }}
+            .container {{ max-width: 500px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; }}
+            h1 {{ color: #34d399; }}
+            .checkmark {{ font-size: 80px; }}
+            .btn-back {{ display: inline-block; margin-top: 20px; padding: 10px 20px; background: #38bdf8; color: #0f172a; text-decoration: none; border-radius: 8px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="checkmark">✅</div>
+            <h1>تم الدفع بنجاح!</h1>
+            <p>تم تفعيل اشتراكك الشهري في SatelliteChecking1</p>
+            <p>📧 تم إرسال إيصال الدفع إلى بريدك الإلكتروني</p>
+            <p>🔓 الآن ارجع إلى البرنامج واضغط <strong>"تحقق من الدفع"</strong></p>
+            <hr style="margin: 20px 0; border-color: #38bdf8;">
+            <p style="font-size: 12px; color: #94a3b8;">Subscription ID: {subscription_id}</p>
+            <a href="/buy" class="btn-back">🔄 العودة للاشتراك</a>
+        </div>
+    </body>
+    </html>
+    '''
+
+# ============================================
+# 3. صفحة إلغاء الدفع
+# ============================================
+@app.route('/payment-cancel', methods=['GET'])
+def payment_cancel():
+    return '''
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>تم الإلغاء - SatelliteChecking1</title>
+        <style>
+            body { font-family: Arial; text-align: center; padding: 50px; background: #0f172a; color: white; }
+            .container { max-width: 500px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; }
+            h1 { color: #facc15; }
+            .btn-back { display: inline-block; margin-top: 20px; padding: 10px 20px; background: #38bdf8; color: #0f172a; text-decoration: none; border-radius: 8px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>⚠️ تم إلغاء الدفع</h1>
+            <p>لم يتم خصم أي مبلغ من حسابك.</p>
+            <p>يمكنك العودة إلى البرنامج والمحاولة مرة أخرى.</p>
+            <a href="/buy" class="btn-back">💰 العودة لصفحة الدفع</a>
+        </div>
+    </body>
+    </html>
+    '''
+
+# ============================================
+# 4. الصفحة الرئيسية
+# ============================================
+@app.route('/', methods=['GET'])
 def home():
-    return jsonify({
-        'status': 'online',
-        'service': 'SatelliteChecking1 API',
-        'version': '2.0',
-        'secure': True
-    })
+    return '''
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>SatelliteChecking1 API</title>
+        <style>
+            body { font-family: Arial; text-align: center; padding: 50px; background: #0f172a; color: white; }
+            .container { max-width: 600px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; }
+            h1 { color: #38bdf8; }
+            .endpoint { background: #0f172a; padding: 10px; border-radius: 8px; margin: 10px 0; font-family: monospace; }
+            .btn { display: inline-block; margin-top: 20px; padding: 12px 30px; background: #facc15; color: #0f172a; text-decoration: none; border-radius: 8px; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🛰️ SatelliteChecking1 API</h1>
+            <p>الخدمة تعمل بشكل طبيعي ✅</p>
+            <div class="endpoint">POST /api/activate - تفعيل الترخيص</div>
+            <div class="endpoint">POST /api/check - التحقق من الترخيص</div>
+            <div class="endpoint">POST /api/get-license - جلب ترخيص جديد</div>
+            <div class="endpoint">GET /buy - صفحة الدفع</div>
+            <a href="/buy" class="btn">💰 شراء اشتراك</a>
+        </div>
+    </body>
+    </html>
+    '''
 
-@app.route('/api/check', methods=['POST'])
-def check_license():
+# ============================================
+# 5. API لجلب الترخيص (يستخدمه برنامج العميل)
+# ============================================
+@app.route('/api/get-license', methods=['POST'])
+def get_license():
     try:
         data = request.get_json()
-        license_key = data.get('license_key', '').upper().strip()
-        device_id = hash_device(data.get('device_id', ''))
-        timestamp = data.get('timestamp', 0)
+        device_id = data.get('device_id')
         
-        current_time = int(time.time())
-        if abs(current_time - timestamp) > 60:
-            return jsonify({'success': False, 'status': 'error', 'error': 'طلب منتهي الصلاحية'})
+        if not device_id:
+            return jsonify({'success': False, 'error': 'device_id مطلوب'})
         
-        conn = sqlite3.connect('licenses.db')
-        c = conn.cursor()
-        c.execute("SELECT * FROM licenses WHERE license_key = ? AND device_id = ?", 
-                  (license_key, device_id))
-        license_data = c.fetchone()
+        # توليد ترخيص جديد
+        license_key = generate_license_key()
         
-        if not license_data:
-            conn.close()
-            return jsonify({'success': False, 'status': 'invalid', 'error': 'ترخيص غير صالح'})
-        
-        expiry_date = license_data[5]
-        is_active = license_data[6]
-        
-        if not is_active:
-            conn.close()
-            return jsonify({'success': False, 'status': 'inactive', 'error': 'الترخيص غير نشط'})
-        
-        if expiry_date:
-            expiry = datetime.datetime.fromisoformat(expiry_date)
-            if expiry < datetime.datetime.now():
-                c.execute("UPDATE licenses SET is_active = 0 WHERE license_key = ?", (license_key,))
-                conn.commit()
-                conn.close()
-                return jsonify({'success': False, 'status': 'expired', 'error': 'انتهت صلاحية الترخيص'})
-        
-        conn.close()
+        # حفظ الترخيص
+        licenses = load_licenses()
+        licenses[device_id] = {
+            "license_key": license_key,
+            "device_id": device_id,
+            "created_at": datetime.now().isoformat(),
+            "status": "active"
+        }
+        save_licenses(licenses)
         
         return jsonify({
             'success': True,
-            'status': 'active',
-            'license_key': license_key,
-            'device_id': device_id,
-            'expiry_date': expiry_date,
-            'plan': license_data[2],
-            'signature': generate_signature('active', license_key, device_id)
+            'license_key': license_key
         })
         
     except Exception as e:
-        return jsonify({'success': False, 'status': 'error', 'error': str(e)})
+        return jsonify({'success': False, 'error': str(e)})
 
+# ============================================
+# 6. API للتحقق من صحة الترخيص
+# ============================================
 @app.route('/api/activate', methods=['POST'])
 def activate():
     try:
         data = request.get_json()
-        license_key = data.get('license_key', '').upper().strip()
-        device_id = hash_device(data.get('device_id', ''))
+        license_key = data.get('license_key')
+        device_id = data.get('device_id')
         
-        conn = sqlite3.connect('licenses.db')
-        c = conn.cursor()
-        c.execute("SELECT * FROM licenses WHERE license_key = ?", (license_key,))
-        license_data = c.fetchone()
+        licenses = load_licenses()
         
-        if not license_data:
-            conn.close()
-            return jsonify({'success': False, 'error': 'كود التفعيل غير صالح'})
-        
-        if license_data[3] and license_data[3] != device_id:
-            conn.close()
-            return jsonify({'success': False, 'error': 'هذا الكود مستخدم على جهاز آخر'})
-        
-        expiry_date = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat()
-        
-        c.execute("""UPDATE licenses 
-                     SET device_id = ?, expiry_date = ?, activated_at = ? 
-                     WHERE license_key = ?""",
-                  (device_id, expiry_date, datetime.datetime.now().isoformat(), license_key))
-        conn.commit()
-        conn.close()
+        # البحث عن الترخيص
+        for dev_id, info in licenses.items():
+            if info.get('license_key') == license_key and info.get('status') == 'active':
+                return jsonify({
+                    'success': True,
+                    'status': 'active',
+                    'message': 'تم التفعيل بنجاح'
+                })
         
         return jsonify({
-            'success': True,
-            'status': 'active',
-            'plan': license_data[2],
-            'expiry_date': expiry_date,
-            'signature': generate_signature('active', license_key, device_id)
+            'success': False,
+            'error': 'ترخيص غير صالح أو منتهي الصلاحية'
         })
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/api/create_license', methods=['POST'])
-def create_license():
+# ============================================
+# 7. API للتحقق من حالة الترخيص
+# ============================================
+@app.route('/api/check', methods=['POST'])
+def check():
     try:
         data = request.get_json()
-        secret = data.get('secret', '')
+        license_key = data.get('license_key')
+        device_id = data.get('device_id')
         
-        if secret != ADMIN_SECRET:
-            return jsonify({'success': False, 'error': 'غير مصرح'})
+        licenses = load_licenses()
         
-        license_key = generate_license()
-        created_at = datetime.datetime.now().isoformat()
+        for dev_id, info in licenses.items():
+            if info.get('license_key') == license_key and info.get('status') == 'active':
+                return jsonify({
+                    'success': True,
+                    'status': 'active',
+                    'message': 'الترخيص صالح'
+                })
         
-        conn = sqlite3.connect('licenses.db')
-        c = conn.cursor()
-        c.execute("""INSERT INTO licenses (license_key, plan, max_devices, is_active, created_at) 
-                     VALUES (?, 'pro', 1, 1, ?)""",
-                  (license_key, created_at))
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'success': True, 'license_key': license_key})
+        return jsonify({
+            'success': False,
+            'status': 'invalid',
+            'error': 'ترخيص غير صالح'
+        })
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
+# ============================================
+# 8. API للتحقق من صحة السيرفر
+# ============================================
+@app.route('/api/health', methods=['GET'])
+def health():
+    return jsonify({
+        'success': True,
+        'status': 'healthy',
+        'secure': True,
+        'service': 'SatelliteChecking1 API',
+        'version': '2.0',
+        'timestamp': datetime.now().isoformat()
+    })
+
+# ============================================
+# تشغيل السيرفر
+# ============================================
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    print("=" * 50)
+    print("🚀 تشغيل سيرفر SatelliteChecking1...")
+    print(f"📍 http://localhost:5000")
+    print(f"📡 الرابط العام: https://satellite-api-mnfw.onrender.com")
+    print(f"💰 صفحة الدفع: /buy")
+    print(f"📡 API: /api/activate, /api/check, /api/get-license")
+    print("=" * 50)
+    app.run(host='0.0.0.0', port=5000, debug=True)
