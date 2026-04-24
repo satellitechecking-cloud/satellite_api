@@ -23,6 +23,11 @@ LICENSES_FILE = "licenses.json"
 PAID_DEVICES_FILE = "paid_devices.json"
 
 # ============================================
+# كلمة سر لتوليد المفاتيح يدوياً (غيرها بما يناسبك)
+# ============================================
+ADMIN_SECRET = "SAT-ADMIN-KEY-2024"
+
+# ============================================
 # دوال مساعدة للتخزين
 # ============================================
 
@@ -69,6 +74,21 @@ def generate_license_key():
         part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
         parts.append(part)
     return '-'.join(parts)
+
+def create_license_for_device(device_id, license_key=None):
+    """إنشاء ترخيص لجهاز معين (داخلي)"""
+    if license_key is None:
+        license_key = generate_license_key()
+    
+    licenses = load_licenses()
+    licenses[device_id] = {
+        "license_key": license_key,
+        "device_id": device_id,
+        "created_at": datetime.now().isoformat(),
+        "status": "active"
+    }
+    save_licenses(licenses)
+    return license_key
 
 # ============================================
 # 1. صفحة الدفع الرئيسية
@@ -142,7 +162,7 @@ def buy_page():
     '''
 
 # ============================================
-# 2. صفحة نجاح الدفع (تسجيل الجهاز كمدفوع)
+# 2. صفحة نجاح الدفع (تسجيل الجهاز كمدفوع + توليد ترخيص تلقائي)
 # ============================================
 @app.route('/payment-success', methods=['GET'])
 def payment_success():
@@ -156,6 +176,10 @@ def payment_success():
     save_paid_device(device_id)
     print(f"✅ تم تسجيل جهاز {device_id[:30]}... كمدفوع")
     
+    # 🔥 توليد ترخيص تلقائي للجهاز فوراً بعد الدفع
+    license_key = create_license_for_device(device_id)
+    print(f"✅ تم توليد ترخيص تلقائي: {license_key}")
+    
     return f'''
     <!DOCTYPE html>
     <html lang="ar" dir="rtl">
@@ -167,6 +191,7 @@ def payment_success():
             .container {{ max-width: 500px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; }}
             h1 {{ color: #34d399; }}
             .checkmark {{ font-size: 80px; }}
+            .license-code {{ background: #0f172a; padding: 15px; border-radius: 10px; font-family: monospace; font-size: 18px; margin: 20px 0; }}
         </style>
     </head>
     <body>
@@ -174,7 +199,11 @@ def payment_success():
             <div class="checkmark">✅</div>
             <h1>تم الدفع بنجاح!</h1>
             <p>تم تفعيل اشتراكك الشهري في SatelliteChecking1</p>
-            <p>🔓 الآن ارجع إلى البرنامج واضغط <strong>"تحقق من الدفع"</strong></p>
+            <div class="license-code">
+                🔑 كود التفعيل الخاص بك:<br>
+                <strong style="color: #facc15;">{license_key}</strong>
+            </div>
+            <p>🔓 يمكنك الآن العودة إلى البرنامج واستخدام هذا الكود</p>
             <hr>
             <p style="font-size: 12px; color: #94a3b8;">Subscription ID: {subscription_id}</p>
         </div>
@@ -225,19 +254,16 @@ def get_license():
         if not is_device_paid(device_id):
             return jsonify({'success': False, 'error': 'لم يتم الدفع من هذا الجهاز. يرجى شراء اشتراك أولاً'})
         
-        # الجهاز دفع - نعطيه ترخيص
-        license_key = generate_license_key()
-        
+        # التحقق: هل يوجد ترخيص لهذا الجهاز بالفعل؟
         licenses = load_licenses()
-        licenses[device_id] = {
-            "license_key": license_key,
-            "device_id": device_id,
-            "created_at": datetime.now().isoformat(),
-            "status": "active"
-        }
-        save_licenses(licenses)
+        if device_id in licenses and licenses[device_id].get('status') == 'active':
+            license_key = licenses[device_id]['license_key']
+            print(f"✅ إعادة إرسال الترخيص الموجود للجهاز {device_id[:30]}...")
+        else:
+            # الجهاز دفع لكن ليس لديه ترخيص - ننشئ له ترخيص جديد
+            license_key = create_license_for_device(device_id)
+            print(f"✅ تم إنشاء ترخيص جديد للجهاز المدفوع {device_id[:30]}...")
         
-        print(f"✅ تم إصدار ترخيص للجهاز المدفوع {device_id[:30]}...")
         return jsonify({'success': True, 'license_key': license_key})
         
     except Exception as e:
@@ -288,7 +314,45 @@ def check():
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
-# 7. API للتحقق من صحة السيرفر
+# 7. API لتوليد مفتاح يدوي (للمطور فقط)
+# ============================================
+@app.route('/api/admin/generate-key', methods=['POST'])
+def admin_generate_key():
+    try:
+        data = request.get_json()
+        admin_secret = data.get('admin_secret')
+        device_id = data.get('device_id')
+        
+        # التحقق من كلمة السر
+        if admin_secret != ADMIN_SECRET:
+            return jsonify({'success': False, 'error': 'غير مصرح به'})
+        
+        if not device_id:
+            return jsonify({'success': False, 'error': 'device_id مطلوب'})
+        
+        # تسجيل الجهاز كمدفوع (إذا لم يكن مسجلاً)
+        if not is_device_paid(device_id):
+            save_paid_device(device_id)
+            print(f"✅ تم تسجيل الجهاز {device_id[:30]}... كمدفوع (يدوي)")
+        
+        # إنشاء ترخيص جديد للجهاز
+        license_key = create_license_for_device(device_id)
+        
+        print(f"✅ تم توليد مفتاح يدوي للجهاز {device_id[:30]}...: {license_key}")
+        
+        return jsonify({
+            'success': True, 
+            'license_key': license_key,
+            'device_id': device_id,
+            'message': 'تم توليد المفتاح بنجاح'
+        })
+        
+    except Exception as e:
+        print(f"❌ خطأ في admin_generate_key: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+# ============================================
+# 8. API للتحقق من صحة السيرفر
 # ============================================
 @app.route('/api/health', methods=['GET'])
 def health():
@@ -309,5 +373,6 @@ if __name__ == '__main__':
     print("🚀 تشغيل سيرفر SatelliteChecking1...")
     print("💰 صفحة الدفع: /buy")
     print("📡 API: /api/activate, /api/check, /api/get-license")
+    print("🔐 Admin API: /api/admin/generate-key (للتوليد اليدوي)")
     print("=" * 50)
     app.run(host='0.0.0.0', port=5000, debug=True)
