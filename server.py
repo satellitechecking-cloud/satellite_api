@@ -1,34 +1,29 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import json
 import os
 import random
 import string
 from datetime import datetime, timedelta
-import secrets
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 CORS(app)
 
 # ============================================
-# 🔐 بيانات PayPal
+# إعدادات حفظ الإيصالات
 # ============================================
-PAYPAL_CLIENT_ID = "Ab84fn5Z-fuDvANlGASLbDIkWhPA9J4d3fBtGqt98_Qp6l9fkgvTpZIrc_kwbCNxBMHjUuBCnetcINVa"
-PAYPAL_SECRET = "EEi9D6sGO9n4Jhd0Dvk0t2-aIKEwW5fNYXOZ9T8nfcRCmEBElTz8kyhpq9dKiHB4a5wDApxW55UPCnDp"
-PAYPAL_PLAN_ID = "P-26497072CJ312830WNHY54PY"
+UPLOAD_FOLDER = "payment_receipts"
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp', 'pdf'}
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # ============================================
 # ملفات التخزين
 # ============================================
 LICENSES_FILE = "licenses.json"
 PAID_DEVICES_FILE = "paid_devices.json"
-TRIALS_FILE = "free_trials.json"
-BACKUP_LICENSES_FILE = "licenses_backup.json"
-
-# ============================================
-# كلمة سر لتوليد المفاتيح يدوياً
-# ============================================
-ADMIN_SECRET = "SAT-ADMIN-KEY-2024"
+TRIAL_USED_FILE = "trial_used.json"
+PENDING_PAYMENTS_FILE = "pending_payments.json"
 
 # ============================================
 # دوال مساعدة
@@ -46,17 +41,6 @@ def load_licenses():
 def save_licenses(licenses):
     try:
         with open(LICENSES_FILE, 'w') as f:
-            json.dump(licenses, f, indent=2)
-        # أيضا حفظ نسخة احتياطية
-        save_backup_licenses(licenses)
-        return True
-    except:
-        return False
-
-def save_backup_licenses(licenses):
-    """حفظ نسخة احتياطية من التراخيص"""
-    try:
-        with open(BACKUP_LICENSES_FILE, 'w') as f:
             json.dump(licenses, f, indent=2)
         return True
     except:
@@ -80,311 +64,186 @@ def save_paid_device(device_id):
 def is_device_paid(device_id):
     return device_id in load_paid_devices()
 
-def load_trials():
+def load_trial_used():
     try:
-        if os.path.exists(TRIALS_FILE):
-            with open(TRIALS_FILE, 'r') as f:
-                return json.load(f)
-        return {}
+        if os.path.exists(TRIAL_USED_FILE):
+            with open(TRIAL_USED_FILE, 'r') as f:
+                return set(json.load(f))
+        return set()
     except:
-        return {}
+        return set()
 
-def save_trials(trials):
-    with open(TRIALS_FILE, 'w') as f:
-        json.dump(trials, f, indent=2)
+def save_trial_used(device_id):
+    trial_used = load_trial_used()
+    trial_used.add(device_id)
+    with open(TRIAL_USED_FILE, 'w') as f:
+        json.dump(list(trial_used), f)
 
-def has_free_trial(device_id):
-    trials = load_trials()
-    if device_id in trials:
-        expiry = datetime.fromisoformat(trials[device_id]['expiry'])
-        if expiry > datetime.now():
-            return True, trials[device_id]['expiry']
-        else:
-            # انتهت التجربة، نزيلها
-            del trials[device_id]
-            save_trials(trials)
-            return False, None
-    return False, None
-
-def start_free_trial(device_id, email):
-    trials = load_trials()
-    expiry = datetime.now() + timedelta(hours=24)
-    
-    trials[device_id] = {
-        'email': email,
-        'started': datetime.now().isoformat(),
-        'expiry': expiry.isoformat(),
-        'used': True
-    }
-    save_trials(trials)
-    
-    # توليد كود ترخيص تجريبي
-    license_key = f"TRIAL_{device_id[:8]}_{secrets.token_hex(4)}".upper()
-    
-    # حفظ الترخيص التجريبي
-    licenses = load_licenses()
-    licenses[device_id] = {
-        "license_key": license_key,
-        "device_id": device_id,
-        "created_at": datetime.now().isoformat(),
-        "expiry_date": expiry.isoformat(),
-        "status": "active",
-        "type": "trial",
-        "email": email
-    }
-    save_licenses(licenses)
-    
-    return license_key, expiry
+def has_used_trial(device_id):
+    return device_id in load_trial_used()
 
 def generate_license_key():
+    """توليد مفتاح ترخيص فريد بصيغة XXXX-XXXX-XXXX-XXXX"""
     parts = []
     for i in range(4):
         part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
         parts.append(part)
     return '-'.join(parts)
 
-def create_license_for_device(device_id, license_key=None, expiry_days=30):
-    if license_key is None:
-        license_key = generate_license_key()
-    
-    expiry_date = datetime.now() + timedelta(days=expiry_days)
-    
-    licenses = load_licenses()
-    licenses[device_id] = {
-        "license_key": license_key,
-        "device_id": device_id,
-        "created_at": datetime.now().isoformat(),
-        "expiry_date": expiry_date.isoformat(),
-        "status": "active",
-        "type": "paid"
-    }
-    save_licenses(licenses)
-    return license_key
-
-def check_license_validity(license_key, device_id):
-    """التحقق من صحة الترخيص - نفس ما يتوقعه ملف التحليل"""
-    licenses = load_licenses()
-    
-    for dev_id, info in licenses.items():
-        if info.get('license_key') == license_key:
-            # التحقق من تطابق الجهاز
-            if dev_id != device_id:
-                return False, "هذا المفتاح غير صالح لهذا الجهاز"
-            
-            # التحقق من الحالة
-            if info.get('status') != 'active':
-                return False, "الترخيص غير نشط"
-            
-            # التحقق من صلاحية التاريخ
-            expiry_date = info.get('expiry_date')
-            if expiry_date:
-                try:
-                    expiry = datetime.fromisoformat(expiry_date)
-                    if expiry < datetime.now():
-                        return False, "انتهت صلاحية الترخيص"
-                except:
-                    pass
-            
-            # حساب الأيام المتبقية
-            if expiry_date:
-                try:
-                    expiry = datetime.fromisoformat(expiry_date)
-                    days_left = (expiry - datetime.now()).days
-                    return True, f"ترخيص صالح لمدة {days_left} يوم"
-                except:
-                    return True, "ترخيص صالح"
-            
-            return True, "ترخيص صالح"
-    
-    return False, "مفتاح غير موجود"
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # ============================================
-# 1. الصفحة الرئيسية
-# ============================================
-@app.route('/', methods=['GET'])
-def home():
-    return jsonify({
-        'service': 'SatelliteChecking1 API',
-        'status': 'online',
-        'version': '5.0',
-        'endpoints': [
-            '/buy',
-            '/free-trial',
-            '/api/activate',
-            '/api/check',
-            '/api/get-license',
-            '/api/start-free-trial',
-            '/api/health'
-        ]
-    })
-
-# ============================================
-# 2. صفحة الدفع
+# 1. صفحة الدفع الرئيسية (معلومات الحساب البنكي - 30 دولار)
 # ============================================
 @app.route('/buy', methods=['GET'])
 def buy_page():
-    return f'''
-    <!DOCTYPE html>
-    <html lang="ar" dir="rtl">
-    <head>
-        <meta charset="UTF-8">
-        <title>SatelliteChecking1 - اشتراك شهري</title>
-        <script src="https://www.paypal.com/sdk/js?client-id={PAYPAL_CLIENT_ID}&vault=true&intent=subscription"></script>
-        <style>
-            body {{ font-family: 'Segoe UI', Arial; text-align: center; padding: 50px; background: #0f172a; color: white; direction: rtl; }}
-            .container {{ max-width: 500px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; }}
-            h1 {{ color: #facc15; }}
-            .price {{ font-size: 48px; color: #38bdf8; margin: 20px 0; }}
-            .trial-btn {{ background: #34d399; color: #0f172a; padding: 12px 25px; border-radius: 10px; text-decoration: none; display: inline-block; margin-top: 20px; }}
-            .btn-primary {{ background: #38bdf8; color: #0f172a; padding: 12px 25px; border-radius: 10px; text-decoration: none; display: inline-block; margin-top: 10px; }}
-        </style>
-        <script>
-            if(!localStorage.getItem('satellite_device_id')) {{
-                var deviceId = 'DEV_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-                localStorage.setItem('satellite_device_id', deviceId);
-            }}
-        </script>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🛰️ SatelliteChecking1</h1>
-            <div class="price">$20 <span style="font-size:18px">/ شهرياً</span></div>
-            <p>✅ تحليلات غير محدودة</p>
-            <p>✅ دقة عالية في الكشف</p>
-            <p>✅ دعم فني على مدار الساعة</p>
-            <div id="paypal-button-container"></div>
-            <a href="/free-trial" class="trial-btn">🎁 جرب مجاناً لمدة 24 ساعة</a>
-            <a href="/" style="display:block; margin-top:20px; color:#38bdf8;">🏠 الرئيسية</a>
-        </div>
-        <script>
-            var deviceId = localStorage.getItem('satellite_device_id');
-            paypal.Buttons({{
-                createSubscription: function(data, actions) {{
-                    return actions.subscription.create({{
-                        plan_id: '{PAYPAL_PLAN_ID}',
-                        custom_id: deviceId
-                    }});
-                }},
-                onApprove: function(data, actions) {{
-                    window.location.href = '/payment-success?subscription_id=' + data.subscriptionID + '&device_id=' + deviceId;
-                }}
-            }}).render('#paypal-button-container');
-        </script>
-    </body>
-    </html>
-    '''
-
-# ============================================
-# 3. صفحة نجاح الدفع
-# ============================================
-@app.route('/payment-success', methods=['GET'])
-def payment_success():
-    device_id = request.args.get('device_id')
-    subscription_id = request.args.get('subscription_id')
-    
-    if device_id:
-        save_paid_device(device_id)
-        license_key = create_license_for_device(device_id, expiry_days=30)
-        return f'''
-        <!DOCTYPE html>
-        <html lang="ar" dir="rtl">
-        <head><meta charset="UTF-8"><title>تم الدفع بنجاح</title>
-        <style>
-            body {{ font-family: Arial; text-align: center; padding: 50px; background: #0f172a; color: white; }}
-            .container {{ max-width: 500px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; }}
-            .key {{ background: #334155; padding: 15px; border-radius: 10px; font-family: monospace; font-size: 18px; margin: 20px 0; }}
-        </style>
-        </head>
-        <body>
-        <div class="container">
-            <h1>✅ تم الدفع بنجاح!</h1>
-            <p>🔑 كود التفعيل الخاص بك:</p>
-            <div class="key">{license_key}</div>
-            <p>📅 صلاحية الترخيص: 30 يوماً</p>
-            <a href="/free-trial" style="color:#38bdf8;">🏠 العودة</a>
-        </div>
-        </body>
-        </html>
-        '''
-    return '<h1>❌ خطأ في الدفع</h1><a href="/buy">المحاولة مرة أخرى</a>'
-
-# ============================================
-# 4. صفحة التجربة المجانية
-# ============================================
-@app.route('/free-trial', methods=['GET'])
-def free_trial_page():
     return '''
     <!DOCTYPE html>
     <html lang="ar" dir="rtl">
     <head>
         <meta charset="UTF-8">
-        <title>تجربة مجانية - SatelliteChecking1</title>
+        <title>SatelliteChecking1 - اشتراك شهري</title>
         <style>
             body { font-family: Arial; text-align: center; padding: 50px; background: #0f172a; color: white; }
             .container { max-width: 500px; margin: auto; background: #1e293b; padding: 40px; border-radius: 20px; }
-            input { width: 90%; padding: 12px; margin: 10px 0; border-radius: 8px; background: #334155; color: white; border: none; }
-            button { background: #34d399; color: #0f172a; padding: 12px 30px; border: none; border-radius: 10px; cursor: pointer; font-size: 16px; }
-            .result { margin-top: 20px; padding: 15px; border-radius: 10px; }
-            .success { background: #34d399; color: #0f172a; }
-            .error { background: #ef4444; color: white; }
+            h1 { color: #facc15; }
+            .price { font-size: 48px; color: #38bdf8; margin: 20px 0; }
+            .bank-info { background: #0f172a; padding: 15px; border-radius: 10px; margin: 20px 0; text-align: right; direction: ltr; }
+            .note { font-size: 12px; color: #94a3b8; margin-top: 20px; }
         </style>
-        <script>
-            if(!localStorage.getItem('satellite_device_id')) {
-                var deviceId = 'DEV_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-                localStorage.setItem('satellite_device_id', deviceId);
-            }
-        </script>
     </head>
     <body>
         <div class="container">
-            <h1>🎁 تجربة مجانية 24 ساعة</h1>
-            <input type="text" id="device_id" placeholder="معرف الجهاز">
-            <input type="email" id="email" placeholder="بريدك الإلكتروني">
-            <button onclick="startTrial()">ابدأ التجربة الآن</button>
-            <div id="result"></div>
-            <hr style="margin: 20px 0;">
-            <p>أو يمكنك</p>
-            <a href="/buy" style="background:#38bdf8; color:#0f172a; padding:12px 30px; border-radius:10px; text-decoration:none; display:inline-block;">💰 شراء اشتراك شهري (20$)</a>
+            <h1>🛰️ SatelliteChecking1</h1>
+            <p>نظام كشف الفراغات والمعادن والذهب عبر الأقمار الصناعية</p>
+            <div class="price">$30 <span style="font-size:18px">/ شهرياً</span></div>
+            <div class="bank-info">
+                <strong>🏦 بيانات الحساب البنكي:</strong><br>
+                البنك: البنك الإسلامي الفلسطيني<br>
+                اسم المستفيد: هيثم غازي محمد بزراوي<br>
+                رقم IBAN: PS30PIBC084216100580033101000
+            </div>
+            <p>⚠️ بعد التحويل، يرجى العودة إلى البرنامج وإرسال إشعار الدفع مع رقم العملية وصورة الإيصال</p>
+            <div class="note">🔒 سيتم تفعيل اشتراكك خلال 24 ساعة من استلام إشعار الدفع</div>
         </div>
-        <script>
-            document.getElementById('device_id').value = localStorage.getItem('satellite_device_id');
-            
-            function startTrial() {
-                var device_id = document.getElementById('device_id').value;
-                var email = document.getElementById('email').value;
-                
-                if(!email) {
-                    document.getElementById('result').innerHTML = '<div class="result error">❌ الرجاء إدخال البريد الإلكتروني</div>';
-                    return;
-                }
-                
-                document.getElementById('result').innerHTML = '<div class="result">🔄 جاري التفعيل...</div>';
-                
-                fetch('/api/start-free-trial', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({device_id: device_id, email: email})
-                })
-                .then(res => res.json())
-                .then(data => {
-                    if(data.success) {
-                        document.getElementById('result').innerHTML = '<div class="result success">✅ تم التفعيل بنجاح!<br>🔑 كود التفعيل: <strong>' + data.license_key + '</strong><br>📅 ينتهي في: ' + new Date(data.expiry).toLocaleString('ar') + '</div>';
-                        localStorage.setItem('satellite_license', data.license_key);
-                    } else {
-                        document.getElementById('result').innerHTML = '<div class="result error">❌ ' + data.error + '</div>';
-                    }
-                })
-                .catch(error => {
-                    document.getElementById('result').innerHTML = '<div class="result error">❌ خطأ في الاتصال: ' + error.message + '</div>';
-                });
-            }
-        </script>
     </body>
     </html>
     '''
 
 # ============================================
-# 5. API تفعيل الترخيص (نقطة النهاية التي يستخدمها ملف التحليل)
+# 2. استقبال إشعار الدفع (رفع الإيصال ورقم العملية)
+# ============================================
+@app.route('/api/submit_payment', methods=['POST'])
+def submit_payment():
+    try:
+        device_id = request.form.get('device_id')
+        ref_number = request.form.get('ref_number')
+        
+        if not device_id or not ref_number:
+            return jsonify({'success': False, 'error': 'بيانات ناقصة'})
+        
+        # التحقق من وجود ملف الإيصال
+        if 'receipt' not in request.files:
+            return jsonify({'success': False, 'error': 'لم يتم رفع إيصال'})
+        
+        file = request.files['receipt']
+        if file.filename == '':
+            return jsonify({'success': False, 'error': 'لم يتم اختيار ملف'})
+        
+        # حفظ الإيصال
+        if file and allowed_file(file.filename):
+            ext = file.filename.rsplit('.', 1)[1].lower()
+            filename = secure_filename(f"{device_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{ref_number}.{ext}")
+            filepath = os.path.join(UPLOAD_FOLDER, filename)
+            file.save(filepath)
+        else:
+            return jsonify({'success': False, 'error': 'نوع الملف غير مدعوم (يدعم: png, jpg, jpeg, gif, bmp, pdf)'})
+        
+        # حفظ الطلب في قائمة الانتظار
+        pending = []
+        if os.path.exists(PENDING_PAYMENTS_FILE):
+            with open(PENDING_PAYMENTS_FILE, 'r') as f:
+                pending = json.load(f)
+        
+        pending.append({
+            "device_id": device_id,
+            "ref_number": ref_number,
+            "receipt_path": filepath,
+            "timestamp": datetime.now().isoformat(),
+            "status": "pending"
+        })
+        
+        with open(PENDING_PAYMENTS_FILE, 'w') as f:
+            json.dump(pending, f, indent=2)
+        
+        print(f"📩 طلب دفع جديد من جهاز {device_id[:30]}... رقم العملية: {ref_number}")
+        
+        return jsonify({'success': True, 'message': 'تم استلام طلب الدفع، سيتم تفعيل البرنامج بعد التحقق خلال 24 ساعة'})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+# ============================================
+# 3. API لجلب الترخيص (للأجهزة المدفوعة أو التجربة المجانية)
+# ============================================
+@app.route('/api/get-license', methods=['POST'])
+def get_license():
+    try:
+        data = request.get_json()
+        device_id = data.get('device_id')
+        
+        if not device_id:
+            return jsonify({'success': False, 'error': 'device_id مطلوب'})
+        
+        # 1. هل هذا الجهاز دفع؟
+        if is_device_paid(device_id):
+            license_key = generate_license_key()
+            licenses = load_licenses()
+            # حذف أي ترخيص قديم
+            if device_id in licenses:
+                del licenses[device_id]
+            licenses[device_id] = {
+                "license_key": license_key,
+                "device_id": device_id,
+                "created_at": datetime.now().isoformat(),
+                "status": "active",
+                "type": "paid"
+            }
+            save_licenses(licenses)
+            print(f"✅ تم إصدار ترخيص مدفوع للجهاز {device_id[:30]}...")
+            return jsonify({'success': True, 'license_key': license_key, 'type': 'paid'})
+        
+        # 2. هل استخدم هذا الجهاز النسخة التجريبية من قبل؟
+        if has_used_trial(device_id):
+            return jsonify({'success': False, 'error': 'انتهت النسخة التجريبية. يرجى شراء اشتراك', 'trial_expired': True})
+        
+        # 3. لم يدفع ولم يستخدم التجربة - نعطيه تجربة مجانية
+        save_trial_used(device_id)
+        trial_license = "TRIAL_" + datetime.now().strftime('%Y%m%d')
+        
+        licenses = load_licenses()
+        if device_id in licenses:
+            del licenses[device_id]
+        licenses[device_id] = {
+            "license_key": trial_license,
+            "device_id": device_id,
+            "created_at": datetime.now().isoformat(),
+            "status": "trial",
+            "type": "trial",
+            "expires_at": (datetime.now() + timedelta(days=1)).isoformat()
+        }
+        save_licenses(licenses)
+        
+        print(f"🎁 تم إصدار ترخيص تجريبي للجهاز {device_id[:30]}...")
+        return jsonify({'success': True, 'license_key': trial_license, 'type': 'trial', 'trial_days': 1})
+        
+    except Exception as e:
+        print(f"❌ خطأ في get_license: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+# ============================================
+# 4. API للتحقق من صحة الترخيص
 # ============================================
 @app.route('/api/activate', methods=['POST'])
 def activate():
@@ -393,28 +252,28 @@ def activate():
         license_key = data.get('license_key')
         device_id = data.get('device_id')
         
-        if not license_key or not device_id:
-            return jsonify({'success': False, 'error': 'البيانات غير مكتملة'})
+        licenses = load_licenses()
         
-        success, message = check_license_validity(license_key, device_id)
+        for dev_id, info in licenses.items():
+            if info.get('license_key') == license_key:
+                # التحقق من صلاحية الترخيص التجريبي
+                if info.get('type') == 'trial':
+                    expires_at = info.get('expires_at')
+                    if expires_at:
+                        expiry_date = datetime.fromisoformat(expires_at)
+                        if datetime.now() > expiry_date:
+                            return jsonify({'success': False, 'error': 'انتهت صلاحية النسخة التجريبية'})
+                
+                if info.get('status') == 'active' or info.get('type') == 'trial':
+                    return jsonify({'success': True, 'status': 'active', 'type': info.get('type', 'paid')})
         
-        if success:
-            return jsonify({
-                'success': True,
-                'status': 'active',
-                'message': message
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'error': message
-            })
+        return jsonify({'success': False, 'error': 'ترخيص غير صالح'})
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
-# 6. API التحقق من الترخيص
+# 5. API للتحقق من حالة الترخيص
 # ============================================
 @app.route('/api/check', methods=['POST'])
 def check():
@@ -423,36 +282,29 @@ def check():
         license_key = data.get('license_key')
         device_id = data.get('device_id')
         
-        if not license_key or not device_id:
-            return jsonify({'success': False, 'error': 'البيانات غير مكتملة'})
+        licenses = load_licenses()
         
-        success, message = check_license_validity(license_key, device_id)
+        for dev_id, info in licenses.items():
+            if info.get('license_key') == license_key:
+                if info.get('type') == 'trial':
+                    expires_at = info.get('expires_at')
+                    if expires_at:
+                        expiry_date = datetime.fromisoformat(expires_at)
+                        if datetime.now() > expiry_date:
+                            return jsonify({'success': False, 'status': 'expired', 'error': 'انتهت التجربة'})
+                
+                return jsonify({'success': True, 'status': 'active', 'type': info.get('type', 'paid')})
         
-        if success:
-            return jsonify({
-                'success': True,
-                'status': 'active',
-                'message': message
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'status': 'invalid',
-                'error': message
-            })
+        return jsonify({'success': False, 'status': 'invalid'})
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
-# 7. API جلب الترخيص (للمستخدمين الذين دفعوا)
+# 6. API للتجربة المجانية (مرة واحدة لكل جهاز)
 # ============================================
-@app.route('/api/get-license', methods=['POST'])
-def get_license():
-    """
-    جلب الترخيص من السيرفر - فقط إذا كان الجهاز مدفوعاً
-    هذه النقطة يستخدمها ملف التحليل في fetch_license_from_server
-    """
+@app.route('/api/request_free_trial', methods=['POST'])
+def request_free_trial():
     try:
         data = request.get_json()
         device_id = data.get('device_id')
@@ -460,161 +312,187 @@ def get_license():
         if not device_id:
             return jsonify({'success': False, 'error': 'device_id مطلوب'})
         
-        # التحقق مما إذا كان الجهاز مدفوعاً
-        if is_device_paid(device_id):
-            licenses = load_licenses()
-            if device_id in licenses:
-                return jsonify({
-                    'success': True,
-                    'license_key': licenses[device_id]['license_key'],
-                    'message': 'تم استرداد الترخيص بنجاح'
-                })
-            else:
-                # إنشاء ترخيص جديد للجهاز المدفوع
-                license_key = create_license_for_device(device_id, expiry_days=30)
-                return jsonify({
-                    'success': True,
-                    'license_key': license_key,
-                    'message': 'تم إنشاء ترخيص جديد للجهاز المدفوع'
-                })
+        if has_used_trial(device_id):
+            return jsonify({'success': False, 'error': 'لقد استخدمت النسخة التجريبية مسبقاً'})
         
-        # التحقق من التجربة المجانية
-        has_trial, expiry = has_free_trial(device_id)
-        if has_trial and expiry:
-            licenses = load_licenses()
-            if device_id in licenses:
-                return jsonify({
-                    'success': True,
-                    'license_key': licenses[device_id]['license_key'],
-                    'message': 'ترخيص تجريبي نشط',
-                    'trial': True,
-                    'expiry': expiry
-                })
+        save_trial_used(device_id)
+        trial_license = "TRIAL_" + datetime.now().strftime('%Y%m%d')
         
-        return jsonify({
-            'success': False,
-            'error': 'لم يتم الدفع أو تفعيل التجربة لهذا الجهاز'
-        })
+        licenses = load_licenses()
+        if device_id in licenses:
+            del licenses[device_id]
+        licenses[device_id] = {
+            "license_key": trial_license,
+            "device_id": device_id,
+            "created_at": datetime.now().isoformat(),
+            "status": "trial",
+            "type": "trial",
+            "expires_at": (datetime.now() + timedelta(days=1)).isoformat()
+        }
+        save_licenses(licenses)
+        
+        return jsonify({'success': True, 'license_key': trial_license, 'message': 'تم تفعيل النسخة التجريبية لمدة 24 ساعة'})
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
-# 8. API بدء التجربة المجانية
+# 7. لوحة تحكم بسيطة لعرض طلبات الدفع وتفعيلها يدوياً
 # ============================================
-@app.route('/api/start-free-trial', methods=['POST'])
-def start_free_trial_api():
+@app.route('/admin/payments', methods=['GET'])
+def admin_payments():
+    pending = []
+    if os.path.exists(PENDING_PAYMENTS_FILE):
+        with open(PENDING_PAYMENTS_FILE, 'r') as f:
+            pending = json.load(f)
+    
+    html = '''
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>لوحة تحكم الدفع - SatelliteChecking1</title>
+        <style>
+            body { font-family: Arial; background: #0f172a; color: white; padding: 20px; }
+            table { width: 100%; border-collapse: collapse; background: #1e293b; }
+            th, td { border: 1px solid #38bdf8; padding: 10px; text-align: center; }
+            th { background: #facc15; color: #0f172a; }
+            .approve-btn { background: #34d399; color: #0f172a; padding: 5px 10px; border: none; cursor: pointer; border-radius: 5px; }
+            .approve-btn:hover { background: #10b981; }
+            .receipt-link { color: #38bdf8; text-decoration: none; }
+            .status-pending { color: #facc15; }
+            .status-approved { color: #34d399; }
+        </style>
+    </head>
+    <body>
+        <h1>📋 طلبات الدفع البنكي</h1>
+        <p>⚠️ تأكد من صحة الدفع ثم اضغط "تفعيل الترخيص"</p>
+         <table>
+             <tr>
+                 <th>رقم العملية</th>
+                 <th>معرف الجهاز</th>
+                 <th>التاريخ</th>
+                 <th>الإيصال</th>
+                 <th>الحالة</th>
+                 <th>إجراء</th>
+             </tr>
+    '''
+    
+    for p in pending:
+        status_class = "status-approved" if p['status'] == 'approved' else "status-pending"
+        html += f'''
+             <tr>
+                 <td>{p['ref_number']}</td>
+                 <td>{p['device_id'][:30]}...</td>
+                 <td>{p['timestamp'][:19]}</td>
+                 <td><a href='/admin/receipt/{p['receipt_path']}' class='receipt-link' target='_blank'>عرض الإيصال</a></td>
+                 <td class="{status_class}">{p['status']}</td>
+                 <td>
+        '''
+        if p['status'] != 'approved':
+            html += f'<button class="approve-btn" onclick=\'approve("{p["device_id"]}")\'>تفعيل الترخيص</button>'
+        else:
+            html += 'تم التفعيل'
+        html += '</td></tr>'
+    
+    html += '''
+         </table>
+        <script>
+        function approve(deviceId) {
+            if(confirm('هل تريد تفعيل الترخيص لهذا الجهاز؟')) {
+                fetch('/admin/approve', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({device_id: deviceId})
+                }).then(r => r.json()).then(data => {
+                    if(data.success) alert('✅ تم تفعيل الترخيص!');
+                    else alert('❌ فشل: ' + data.error);
+                    location.reload();
+                });
+            }
+        }
+        </script>
+    </body>
+    </html>
+    '''
+    return html
+
+@app.route('/admin/receipt/<path:filepath>')
+def admin_receipt(filepath):
+    return send_file(filepath)
+
+@app.route('/admin/approve', methods=['POST'])
+def approve_payment():
     try:
         data = request.get_json()
         device_id = data.get('device_id')
-        email = data.get('email')
         
-        if not device_id or not email:
-            return jsonify({'success': False, 'error': 'جميع الحقول مطلوبة'})
+        if not device_id:
+            return jsonify({'success': False, 'error': 'device_id مطلوب'})
         
-        # التحقق من عدم استخدام التجربة مسبقاً
-        has_trial, _ = has_free_trial(device_id)
-        if has_trial:
-            return jsonify({'success': False, 'error': 'لقد استخدمت التجربة المجانية مسبقاً'})
+        # تسجيل الجهاز كمدفوع
+        save_paid_device(device_id)
         
-        # بدء التجربة
-        license_key, expiry_date = start_free_trial(device_id, email)
+        # تحديث حالة الطلب
+        pending = []
+        if os.path.exists(PENDING_PAYMENTS_FILE):
+            with open(PENDING_PAYMENTS_FILE, 'r') as f:
+                pending = json.load(f)
         
-        return jsonify({
-            'success': True,
-            'license_key': license_key,
-            'expiry': expiry_date.isoformat(),
-            'message': 'تم تفعيل التجربة المجانية بنجاح لمدة 24 ساعة'
-        })
+        updated = []
+        for p in pending:
+            if p['device_id'] == device_id:
+                p['status'] = 'approved'
+            updated.append(p)
+        
+        with open(PENDING_PAYMENTS_FILE, 'w') as f:
+            json.dump(updated, f, indent=2)
+        
+        # حذف الترخيص التجريبي القديم إن وجد
+        licenses = load_licenses()
+        if device_id in licenses:
+            del licenses[device_id]
+        
+        # إصدار ترخيص جديد مدفوع
+        license_key = generate_license_key()
+        licenses[device_id] = {
+            "license_key": license_key,
+            "device_id": device_id,
+            "created_at": datetime.now().isoformat(),
+            "status": "active",
+            "type": "paid"
+        }
+        save_licenses(licenses)
+        
+        print(f"✅ تم تفعيل الترخيص للجهاز {device_id[:20]}...")
+        return jsonify({'success': True, 'license_key': license_key})
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
-# 9. API التحقق من الصحة
+# 8. API للتحقق من صحة السيرفر
 # ============================================
 @app.route('/api/health', methods=['GET'])
 def health():
     return jsonify({
         'success': True,
         'status': 'healthy',
-        'version': '5.0',
+        'service': 'SatelliteChecking1 Bank Transfer API',
+        'version': '2.0',
+        'price': '30 USD',
         'timestamp': datetime.now().isoformat()
     })
-
-# ============================================
-# 10. API إدارة (للمطور) - توليد مفتاح يدوي
-# ============================================
-@app.route('/api/admin/generate-key', methods=['POST'])
-def admin_generate_key():
-    try:
-        data = request.get_json()
-        admin_secret = data.get('admin_secret')
-        device_id = data.get('device_id')
-        days = data.get('days', 30)
-        
-        if admin_secret != ADMIN_SECRET:
-            return jsonify({'success': False, 'error': 'غير مصرح'})
-        
-        if not device_id:
-            return jsonify({'success': False, 'error': 'device_id مطلوب'})
-        
-        license_key = create_license_for_device(device_id, expiry_days=days)
-        return jsonify({
-            'success': True,
-            'license_key': license_key,
-            'device_id': device_id,
-            'expiry_days': days
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-# ============================================
-# 11. API قائمة التراخيص (للمطور)
-# ============================================
-@app.route('/api/admin/licenses', methods=['GET'])
-def admin_list_licenses():
-    try:
-        admin_secret = request.headers.get('X-Admin-Secret')
-        
-        if admin_secret != ADMIN_SECRET:
-            return jsonify({'success': False, 'error': 'غير مصرح'})
-        
-        licenses = load_licenses()
-        return jsonify({
-            'success': True,
-            'licenses': licenses,
-            'count': len(licenses)
-        })
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
 # تشغيل السيرفر
 # ============================================
 if __name__ == '__main__':
-    print("=" * 60)
-    print("🚀 تشغيل سيرفر SatelliteChecking1 API v5.0")
-    print("=" * 60)
-    print(f"📁 ملف التراخيص: {LICENSES_FILE}")
-    print(f"📁 ملف النسخة الاحتياطية: {BACKUP_LICENSES_FILE}")
-    print(f"📁 ملف الأجهزة المدفوعة: {PAID_DEVICES_FILE}")
-    print(f"📁 ملف التجارب: {TRIALS_FILE}")
-    print("=" * 60)
-    print("🌐 نقاط النهاية المتاحة:")
-    print("   GET  /                    - الصفحة الرئيسية")
-    print("   GET  /buy                 - صفحة الدفع")
-    print("   GET  /free-trial          - صفحة التجربة المجانية")
-    print("   GET  /payment-success     - صفحة نجاح الدفع")
-    print("   POST /api/activate        - تفعيل الترخيص")
-    print("   POST /api/check           - التحقق من الترخيص")
-    print("   POST /api/get-license     - جلب الترخيص")
-    print("   POST /api/start-free-trial- بدء التجربة المجانية")
-    print("   GET  /api/health          - التحقق من صحة السيرفر")
-    print("=" * 60)
-    print("✅ السيرفر جاهز للعمل على http://0.0.0.0:5000")
-    print("=" * 60)
-    
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    print("=" * 50)
+    print("🚀 تشغيل سيرفر SatelliteChecking1 (نظام بنكي)")
+    print("💰 الاشتراك الشهري: 30 دولار")
+    print("📡 API: /api/activate, /api/check, /api/get-license, /api/request_free_trial")
+    print("🏦 نظام الدفع: تحويل بنكي + إشعار يدوي")
+    print("🔧 لوحة التحكم: /admin/payments")
+    print("=" * 50)
+    app.run(host='0.0.0.0', port=5000, debug=True)
