@@ -12,9 +12,9 @@ CORS(app)
 # ============================================
 # 🔐 بيانات PayPal الخاصة بك (Live)
 # ============================================
-PAYPAL_CLIENT_ID = "ATl4-CsC8WLf0yZQw3Hcoiwe9VZ4N2abU8gDET-GGk7CEqIElUECTSbD_Y3EYTcymEey7wvustobI753"
-PAYPAL_SECRET = "EN7-2GQ-nWQakjxaWhQqjjooUKcHkSm1Bsu_edITFCsTmNnuKd0SORavMqEe4VNZ7j_aaHgmLo8xaFoS"
-PAYPAL_PLAN_ID = "P-60A89529UF070594ENHTVAIY"
+PAYPAL_CLIENT_ID = "Ab84fn5Z-fuDvANlGASLbDIkWhPA9J4d3fBtGqt98_Qp6l9fkgvTpZIrc_kwbCNxBMHjUuBCnetcINVa"
+PAYPAL_SECRET = "EEi9D6sGO9n4Jhd0Dvk0t2-aIKEwW5fNYXOZ9T8nfcRCmEBElTz8kyhpq9dKiHB4a5wDApxW55UPCnDp"
+PAYPAL_PLAN_ID = "P-26497072CJ312830WNHY54PY"
 
 # ============================================
 # ملفات التخزين
@@ -109,6 +109,7 @@ def buy_page():
             .price {{ font-size: 48px; color: #38bdf8; margin: 20px 0; }}
             .features {{ text-align: right; margin: 30px 0; }}
             .note {{ font-size: 12px; color: #94a3b8; margin-top: 20px; }}
+            #paypal-button-container {{ margin: 30px 0; }}
         </style>
         <script>
             if(!localStorage.getItem('satellite_device_id')) {{
@@ -121,11 +122,11 @@ def buy_page():
         <div class="container">
             <h1>🛰️ SatelliteChecking1</h1>
             <p>نظام كشف الفراغات والمعادن والذهب عبر الأقمار الصناعية</p>
-            <div class="price">$100 <span style="font-size:18px">/ شهرياً</span></div>
+            <div class="price">$40 <span style="font-size:18px">/ شهرياً</span></div>
             <ul class="features">
                 <li>✅ تحليلات غير محدودة</li>
                 <li>✅ دقة عالية (حتى 10 متر)</li>
-                <li>✅ تقارير شاملة (PDF, KML, JSON)</li>
+                <li>✅ تقارير شاملة</li>
                 <li>✅ دعم فني 24/7</li>
             </ul>
             <div id="paypal-button-container"></div>
