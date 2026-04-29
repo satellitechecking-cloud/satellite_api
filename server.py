@@ -176,7 +176,7 @@ def buy_page():
         <div class="container">
             <h1>🛰️ SatelliteChecking1</h1>
             <p>نظام كشف الفراغات والمعادن والذهب عبر الأقمار الصناعية</p>
-            <div class="price">$40 <span style="font-size:18px">/ شهرياً</span></div>
+            <div class="price">$20 <span style="font-size:18px">/ شهرياً</span></div>
             <ul class="features">
                 <li>✅ تحليلات غير محدودة</li>
                 <li>✅ دقة عالية (حتى 10 متر)</li>
