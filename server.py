@@ -25,19 +25,20 @@ PAID_DEVICES_FILE = "paid_devices.json"
 TRIAL_USED_FILE = "trial_used.json"
 PENDING_PAYMENTS_FILE = "pending_payments.json"
 FAILED_ATTEMPTS_FILE = "failed_attempts.json"
-CRYPTO_PAYMENTS_FILE = "crypto_payments.json"  # جديد: للمدفوعات الرقمية
+CRYPTO_PAYMENTS_FILE = "crypto_payments.json"
 
 # ============================================
 # إعدادات الحماية
 # ============================================
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
+ADMIN_SECRET = "SAT-ADMIN-2024"
 
 # ============================================
-# عنوان المحفظة الرقمية (USDT - ERC20)
+# عنوان المحفظة الرقمية
 # ============================================
 CRYPTO_WALLET_ADDRESS = "0x8dae6262f49407ab6aee40de10ca458f526b7dd04c1dcd3f733621c83738d071"
-CRYPTO_NETWORK = "ERC20"  # شبكة إيثريوم
+CRYPTO_NETWORK = "ERC20"
 CRYPTO_CURRENCY = "USDT"
 
 # ============================================
@@ -109,10 +110,6 @@ def generate_license_key():
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# ============================================
-# دوال الحماية المتقدمة
-# ============================================
-
 def get_server_time():
     try:
         import requests
@@ -174,46 +171,9 @@ def reset_failed_attempts(device_id):
         pass
 
 # ============================================
-# دوال المدفوعات الرقمية
+# صفحات الويب
 # ============================================
 
-def save_crypto_payment(device_id, transaction_hash, amount=20):
-    """حفظ طلب دفع بالعملة الرقمية"""
-    try:
-        payments = []
-        if os.path.exists(CRYPTO_PAYMENTS_FILE):
-            with open(CRYPTO_PAYMENTS_FILE, 'r') as f:
-                payments = json.load(f)
-        
-        payments.append({
-            "device_id": device_id,
-            "transaction_hash": transaction_hash,
-            "amount": amount,
-            "currency": CRYPTO_CURRENCY,
-            "network": CRYPTO_NETWORK,
-            "wallet_address": CRYPTO_WALLET_ADDRESS,
-            "timestamp": datetime.now().isoformat(),
-            "status": "pending"
-        })
-        
-        with open(CRYPTO_PAYMENTS_FILE, 'w') as f:
-            json.dump(payments, f, indent=2)
-        return True
-    except:
-        return False
-
-def verify_crypto_payment(transaction_hash):
-    """التحقق من صحة الدفع بالعملة الرقمية (محاكاة - يحتاج API حقيقي)"""
-    # في الإصدار الحقيقي، تحتاج API من:
-    # - Etherscan (لـ ERC20)
-    # - Tronscan (لـ TRC20)
-    # - Blockchain.com (لـ BTC)
-    # حالياً نرجع True افتراضياً للتجربة
-    return True
-
-# ============================================
-# 1. صفحة الدفع الرئيسية (بنكي + محفظة)
-# ============================================
 @app.route('/buy', methods=['GET'])
 def buy_page():
     return f'''
@@ -269,9 +229,6 @@ def buy_page():
     </html>
     '''
 
-# ============================================
-# 2. صفحة التجربة المجانية
-# ============================================
 @app.route('/free-trial', methods=['GET'])
 def free_trial_page():
     return '''
@@ -345,8 +302,21 @@ def free_trial_page():
     '''
 
 # ============================================
-# 3. API بدء التجربة المجانية
+# API الرئيسية
 # ============================================
+
+@app.route('/api/health', methods=['GET'])
+def health():
+    return jsonify({
+        'success': True,
+        'status': 'healthy',
+        'service': 'SatelliteChecking1 API',
+        'version': '5.0',
+        'price': '20 USD',
+        'crypto_wallet': CRYPTO_WALLET_ADDRESS,
+        'timestamp': datetime.now().isoformat()
+    })
+
 @app.route('/api/start-free-trial', methods=['POST'])
 def start_free_trial_api():
     try:
@@ -367,7 +337,7 @@ def start_free_trial_api():
         save_trial_used(device_id)
         
         server_time = get_server_time()
-        expiry_date = server_time + timedelta(hours=24)
+        expiry_date = server_time + timedelta(hours=24)  # 24 ساعة = يوم واحد
         
         trial_key = f"TRIAL_{device_id[:8]}_{random.randint(1000,9999)}"
         
@@ -386,7 +356,7 @@ def start_free_trial_api():
         }
         save_licenses(licenses)
         
-        print(f"🎁 تم تفعيل التجربة المجانية للجهاز {device_id[:20]}... البريد: {email}")
+        print(f"🎁 تم تفعيل التجربة المجانية للجهاز {device_id[:20]}... البريد: {email} (تنتهي بعد 24 ساعة)")
         
         return jsonify({
             'success': True,
@@ -399,106 +369,6 @@ def start_free_trial_api():
         print(f"❌ خطأ في بدء التجربة: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
-# ============================================
-# 4. API إشعار الدفع البنكي
-# ============================================
-@app.route('/api/submit_payment', methods=['POST'])
-def submit_payment():
-    try:
-        device_id = request.form.get('device_id')
-        ref_number = request.form.get('ref_number')
-        
-        if not device_id or not ref_number:
-            return jsonify({'success': False, 'error': 'بيانات ناقصة'})
-        
-        if 'receipt' not in request.files:
-            return jsonify({'success': False, 'error': 'لم يتم رفع إيصال'})
-        
-        file = request.files['receipt']
-        if file.filename == '':
-            return jsonify({'success': False, 'error': 'لم يتم اختيار ملف'})
-        
-        if file and allowed_file(file.filename):
-            ext = file.filename.rsplit('.', 1)[1].lower()
-            filename = secure_filename(f"{device_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{ref_number}.{ext}")
-            filepath = os.path.join(UPLOAD_FOLDER, filename)
-            file.save(filepath)
-        else:
-            return jsonify({'success': False, 'error': 'نوع الملف غير مدعوم'})
-        
-        pending = []
-        if os.path.exists(PENDING_PAYMENTS_FILE):
-            with open(PENDING_PAYMENTS_FILE, 'r') as f:
-                pending = json.load(f)
-        
-        pending.append({
-            "device_id": device_id,
-            "ref_number": ref_number,
-            "receipt_path": filepath,
-            "timestamp": datetime.now().isoformat(),
-            "status": "pending",
-            "type": "bank"
-        })
-        
-        with open(PENDING_PAYMENTS_FILE, 'w') as f:
-            json.dump(pending, f, indent=2)
-        
-        print(f"📩 طلب دفع بنكي جديد من جهاز {device_id[:30]}... رقم العملية: {ref_number}")
-        
-        return jsonify({'success': True, 'message': 'تم استلام طلب الدفع، سيتم تفعيل البرنامج بعد التحقق خلال 24 ساعة'})
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-# ============================================
-# 5. API إشعار الدفع بالعملة الرقمية
-# ============================================
-@app.route('/api/submit_crypto_payment', methods=['POST'])
-def submit_crypto_payment():
-    try:
-        data = request.get_json()
-        device_id = data.get('device_id')
-        transaction_hash = data.get('transaction_hash')
-        
-        if not device_id or not transaction_hash:
-            return jsonify({'success': False, 'error': 'بيانات ناقصة'})
-        
-        # التحقق من صحة الهاش
-        if not transaction_hash.startswith('0x') or len(transaction_hash) != 66:
-            return jsonify({'success': False, 'error': 'صيغة هاش المعاملة غير صالحة'})
-        
-        # حفظ طلب الدفع
-        save_crypto_payment(device_id, transaction_hash)
-        
-        pending = []
-        if os.path.exists(PENDING_PAYMENTS_FILE):
-            with open(PENDING_PAYMENTS_FILE, 'r') as f:
-                pending = json.load(f)
-        
-        pending.append({
-            "device_id": device_id,
-            "transaction_hash": transaction_hash,
-            "amount": 20,
-            "currency": CRYPTO_CURRENCY,
-            "network": CRYPTO_NETWORK,
-            "timestamp": datetime.now().isoformat(),
-            "status": "pending",
-            "type": "crypto"
-        })
-        
-        with open(PENDING_PAYMENTS_FILE, 'w') as f:
-            json.dump(pending, f, indent=2)
-        
-        print(f"💸 طلب دفع بالعملة الرقمية من جهاز {device_id[:30]}... الهاش: {transaction_hash[:20]}...")
-        
-        return jsonify({'success': True, 'message': 'تم استلام طلب الدفع، سيتم تفعيل البرنامج بعد التحقق من المعاملة'})
-        
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-# ============================================
-# 6. API لجلب الترخيص
-# ============================================
 @app.route('/api/get-license', methods=['POST'])
 def get_license():
     try:
@@ -518,10 +388,12 @@ def get_license():
                 })
             else:
                 license_key = generate_license_key()
+                expiry_date = get_server_time() + timedelta(days=30)
                 licenses[device_id] = {
                     "license_key": license_key,
                     "device_id": device_id,
                     "created_at": datetime.now().isoformat(),
+                    "expiry_date": expiry_date.isoformat(),
                     "status": "active",
                     "type": "paid"
                 }
@@ -560,9 +432,6 @@ def get_license():
         print(f"❌ خطأ في get_license: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
-# ============================================
-# 7. API للتحقق من صحة الترخيص (تفعيل)
-# ============================================
 @app.route('/api/activate', methods=['POST'])
 def activate():
     try:
@@ -627,9 +496,6 @@ def activate():
         print(f"❌ خطأ في activate: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
-# ============================================
-# 8. API للتحقق من حالة الترخيص
-# ============================================
 @app.route('/api/check', methods=['POST'])
 def check():
     try:
@@ -669,8 +535,225 @@ def check():
         return jsonify({'success': False, 'status': 'error', 'error': str(e)})
 
 # ============================================
-# 9. لوحة تحكم الدفع
+# API لإدارة التراخيص (للمطور)
 # ============================================
+
+@app.route('/api/admin/create-license', methods=['POST'])
+def admin_create_license():
+    try:
+        data = request.get_json()
+        admin_secret = data.get('admin_secret')
+        
+        if admin_secret != ADMIN_SECRET:
+            return jsonify({'success': False, 'error': 'غير مصرح'})
+        
+        license_key = data.get('license_key')
+        device_id = data.get('device_id')
+        expiry_date_str = data.get('expiry_date')
+        license_type = data.get('type', 'paid')
+        
+        if not license_key or not device_id:
+            return jsonify({'success': False, 'error': 'بيانات ناقصة'})
+        
+        # التحقق من صحة expiry_date
+        if expiry_date_str:
+            expiry_date = datetime.fromisoformat(expiry_date_str)
+        else:
+            if license_type == 'paid':
+                expiry_date = get_server_time() + timedelta(days=30)
+            else:
+                expiry_date = get_server_time() + timedelta(hours=24)
+        
+        licenses = load_licenses()
+        licenses[device_id] = {
+            "license_key": license_key,
+            "device_id": device_id,
+            "created_at": datetime.now().isoformat(),
+            "expiry_date": expiry_date.isoformat(),
+            "status": "active",
+            "type": license_type
+        }
+        save_licenses(licenses)
+        
+        if license_type == 'paid':
+            save_paid_device(device_id)
+        
+        days_left = (expiry_date - get_server_time()).days if license_type == 'paid' else 1
+        print(f"✅ تم إنشاء ترخيص {license_type} للجهاز {device_id[:20]}... ينتهي في {expiry_date.strftime('%Y-%m-%d')}")
+        
+        return jsonify({
+            'success': True,
+            'message': f'تم إنشاء الترخيص ({license_type})',
+            'expiry_date': expiry_date.isoformat(),
+            'days_left': max(0, days_left)
+        })
+        
+    except Exception as e:
+        print(f"❌ خطأ في إنشاء الترخيص: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/admin/licenses', methods=['GET'])
+def admin_get_licenses():
+    try:
+        admin_secret = request.headers.get('X-Admin-Secret')
+        
+        if admin_secret != ADMIN_SECRET:
+            return jsonify({'success': False, 'error': 'غير مصرح'})
+        
+        licenses = load_licenses()
+        server_time = get_server_time()
+        
+        result = {}
+        for device_id, info in licenses.items():
+            result[device_id] = {
+                **info,
+                "remaining_days": max(0, (datetime.fromisoformat(info['expiry_date']) - server_time).days) if info.get('expiry_date') else None
+            }
+        
+        return jsonify({'success': True, 'licenses': result, 'count': len(result)})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/admin/extend-license', methods=['POST'])
+def admin_extend_license():
+    try:
+        data = request.get_json()
+        admin_secret = data.get('admin_secret')
+        
+        if admin_secret != ADMIN_SECRET:
+            return jsonify({'success': False, 'error': 'غير مصرح'})
+        
+        device_id = data.get('device_id')
+        extra_days = data.get('extra_days', 30)
+        
+        if not device_id:
+            return jsonify({'success': False, 'error': 'device_id مطلوب'})
+        
+        licenses = load_licenses()
+        
+        if device_id not in licenses:
+            return jsonify({'success': False, 'error': 'الجهاز غير مسجل'})
+        
+        current_expiry = licenses[device_id].get('expiry_date')
+        server_time = get_server_time()
+        
+        if current_expiry:
+            new_expiry = datetime.fromisoformat(current_expiry) + timedelta(days=extra_days)
+        else:
+            new_expiry = server_time + timedelta(days=extra_days)
+        
+        licenses[device_id]['expiry_date'] = new_expiry.isoformat()
+        licenses[device_id]['status'] = 'active'
+        save_licenses(licenses)
+        
+        print(f"✅ تم تمديد ترخيص الجهاز {device_id[:20]}... بـ {extra_days} يوماً")
+        
+        return jsonify({
+            'success': True,
+            'message': f'تم تمديد الترخيص {extra_days} يوماً',
+            'new_expiry_date': new_expiry.isoformat(),
+            'new_remaining_days': max(0, (new_expiry - server_time).days)
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+# ============================================
+# API للمدفوعات
+# ============================================
+
+@app.route('/api/submit_payment', methods=['POST'])
+def submit_payment():
+    try:
+        device_id = request.form.get('device_id')
+        ref_number = request.form.get('ref_number')
+        
+        if not device_id or not ref_number:
+            return jsonify({'success': False, 'error': 'بيانات ناقصة'})
+        
+        if 'receipt' not in request.files:
+            return jsonify({'success': False, 'error': 'لم يتم رفع إيصال'})
+        
+        file = request.files['receipt']
+        if file.filename == '':
+            return jsonify({'success': False, 'error': 'لم يتم اختيار ملف'})
+        
+        if file and allowed_file(file.filename):
+            ext = file.filename.rsplit('.', 1)[1].lower()
+            filename = secure_filename(f"{device_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{ref_number}.{ext}")
+            filepath = os.path.join(UPLOAD_FOLDER, filename)
+            file.save(filepath)
+        else:
+            return jsonify({'success': False, 'error': 'نوع الملف غير مدعوم'})
+        
+        pending = []
+        if os.path.exists(PENDING_PAYMENTS_FILE):
+            with open(PENDING_PAYMENTS_FILE, 'r') as f:
+                pending = json.load(f)
+        
+        pending.append({
+            "device_id": device_id,
+            "ref_number": ref_number,
+            "receipt_path": filepath,
+            "timestamp": datetime.now().isoformat(),
+            "status": "pending",
+            "type": "bank"
+        })
+        
+        with open(PENDING_PAYMENTS_FILE, 'w') as f:
+            json.dump(pending, f, indent=2)
+        
+        print(f"📩 طلب دفع بنكي جديد من جهاز {device_id[:30]}... رقم العملية: {ref_number}")
+        
+        return jsonify({'success': True, 'message': 'تم استلام طلب الدفع، سيتم تفعيل البرنامج بعد التحقق خلال 24 ساعة'})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/submit_crypto_payment', methods=['POST'])
+def submit_crypto_payment():
+    try:
+        data = request.get_json()
+        device_id = data.get('device_id')
+        transaction_hash = data.get('transaction_hash')
+        
+        if not device_id or not transaction_hash:
+            return jsonify({'success': False, 'error': 'بيانات ناقصة'})
+        
+        if not transaction_hash.startswith('0x') or len(transaction_hash) != 66:
+            return jsonify({'success': False, 'error': 'صيغة هاش المعاملة غير صالحة'})
+        
+        pending = []
+        if os.path.exists(PENDING_PAYMENTS_FILE):
+            with open(PENDING_PAYMENTS_FILE, 'r') as f:
+                pending = json.load(f)
+        
+        pending.append({
+            "device_id": device_id,
+            "transaction_hash": transaction_hash,
+            "amount": 20,
+            "currency": CRYPTO_CURRENCY,
+            "network": CRYPTO_NETWORK,
+            "timestamp": datetime.now().isoformat(),
+            "status": "pending",
+            "type": "crypto"
+        })
+        
+        with open(PENDING_PAYMENTS_FILE, 'w') as f:
+            json.dump(pending, f, indent=2)
+        
+        print(f"💸 طلب دفع بالعملة الرقمية من جهاز {device_id[:30]}... الهاش: {transaction_hash[:20]}...")
+        
+        return jsonify({'success': True, 'message': 'تم استلام طلب الدفع، سيتم تفعيل البرنامج بعد التحقق من المعاملة'})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+# ============================================
+# لوحة تحكم الدفع
+# ============================================
+
 @app.route('/admin/payments', methods=['GET'])
 def admin_payments():
     pending = []
@@ -794,39 +877,28 @@ def approve_payment():
             del licenses[device_id]
         
         license_key = generate_license_key()
+        expiry_date = get_server_time() + timedelta(days=30)
         licenses[device_id] = {
             "license_key": license_key,
             "device_id": device_id,
             "created_at": datetime.now().isoformat(),
+            "expiry_date": expiry_date.isoformat(),
             "status": "active",
             "type": "paid"
         }
         save_licenses(licenses)
         
-        print(f"✅ تم تفعيل الترخيص المدفوع للجهاز {device_id[:20]}...")
-        return jsonify({'success': True, 'license_key': license_key})
+        print(f"✅ تم تفعيل الترخيص المدفوع للجهاز {device_id[:20]}... (30 يوم)")
+        
+        return jsonify({'success': True, 'license_key': license_key, 'expiry_days': 30})
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 # ============================================
-# 10. API للتحقق من صحة السيرفر
+# الصفحة الرئيسية
 # ============================================
-@app.route('/api/health', methods=['GET'])
-def health():
-    return jsonify({
-        'success': True,
-        'status': 'healthy',
-        'service': 'SatelliteChecking1 API',
-        'version': '5.0',
-        'price': '20 USD',
-        'crypto_wallet': CRYPTO_WALLET_ADDRESS,
-        'timestamp': datetime.now().isoformat()
-    })
 
-# ============================================
-# 11. الصفحة الرئيسية
-# ============================================
 @app.route('/')
 def home():
     return jsonify({
@@ -843,7 +915,10 @@ def home():
             '/api/submit_payment',
             '/api/submit_crypto_payment',
             '/api/health',
-            '/admin/payments'
+            '/admin/payments',
+            '/api/admin/create-license',
+            '/api/admin/licenses',
+            '/api/admin/extend-license'
         ],
         'crypto_wallet': CRYPTO_WALLET_ADDRESS
     })
@@ -851,11 +926,12 @@ def home():
 # ============================================
 # تشغيل السيرفر
 # ============================================
+
 if __name__ == '__main__':
     print("=" * 60)
     print("🚀 تشغيل سيرفر SatelliteChecking1 API v5.0")
     print("💰 الاشتراك الشهري: 20 دولار")
-    print("🎁 تجربة مجانية: 24 ساعة")
+    print("🎁 تجربة مجانية: 24 ساعة (يوم واحد)")
     print("💸 الدفع بالعملة الرقمية: USDT (ERC20)")
     print(f"   عنوان المحفظة: {CRYPTO_WALLET_ADDRESS}")
     print("📡 API متاحة:")
@@ -868,5 +944,9 @@ if __name__ == '__main__':
     print("   GET  /api/health")
     print("🏦 نظام الدفع: تحويل بنكي + عملات رقمية")
     print("🔧 لوحة التحكم: /admin/payments")
+    print("🔐 API المطور:")
+    print("   POST /api/admin/create-license (إنشاء ترخيص)")
+    print("   GET  /api/admin/licenses (عرض التراخيص)")
+    print("   POST /api/admin/extend-license (تمديد ترخيص)")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000, debug=True)
